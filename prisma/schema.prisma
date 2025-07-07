@@ -1,0 +1,140 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgres"
+  url      = env("DATABASE_URL")
+}
+
+enum ProviderType {
+  oauth
+  email
+  credentials
+}
+
+model Account {
+  id                String     @id @default(cuid())
+  userId            String
+  type             ProviderType
+  provider         String
+  providerAccountId String
+  email            String     @db.VarChar(255)
+  refresh_token    String?    @db.Text
+  access_token     String?    @db.Text
+  expires_at       Int?
+  token_type       String?    @db.VarChar(50)
+  scope           String?    @db.Text
+  id_token        String?    @db.Text
+  session_state   String?    @db.VarChar(255)
+  isActive        Boolean    @default(true)
+  lastSynced      DateTime?
+  syncStartedAt   DateTime?  // When the current sync operation started
+  syncStatus      String?    @db.VarChar(50) // 'syncing', 'idle', 'error'
+  syncError       String?    @db.Text
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoices        Invoice[]
+  syncSettings    Json?      // Store sync preferences like frequency, folders to scan, etc.
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@index([email])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  password      String    // Hashed password
+  emailVerified Boolean   @default(false)
+  image         String?
+  
+  // Authentication
+  accounts      Account[]  // Connected OAuth accounts (like Gmail)
+  sessions      Session[]
+  
+  // Settings
+  defaultCurrency String    @default("AUD")
+  timezone       String    @default("Australia/Sydney")
+  
+  // Relations
+  invoices      Invoice[]
+  
+  // Timestamps
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Indexes
+  @@index([email])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Invoice {
+  id          String    @id @default(cuid())
+  accountId   String
+  messageId   String    @unique // Gmail message ID
+  threadId    String?   // Gmail thread ID
+  subject     String
+  from        String
+  to          String?
+  date        DateTime
+  amount      Float
+  currency    String    @default("AUD") // Default to AUD for Australian users
+  
+  // File attachments
+  attachment  String?   // Path to the stored attachment
+  fileName    String?
+  fileType    String?
+  fileSize    Int?      // Size in bytes
+  
+  // Processing status
+  status      String    @default("pending") // pending, processed, error, duplicate
+  processedAt DateTime? @default(now())
+  error       String?   @db.Text
+  
+  // Additional metadata
+  categories  String[]  // e.g., ["receipt", "travel", "office"]
+  vendor      String?   // Extracted vendor name
+  invoiceNumber String? // Extracted invoice number
+  dueDate     DateTime? // Extracted due date
+  confidence  Float?    @default(1.0) // Confidence score of the analysis (0.0 to 1.0)
+  source      String?   @default("email") // Source of the invoice data: 'email' or 'attachment'
+  
+  // Relationships
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id])
+  userId      String
+  
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Indexes
+  @@index([accountId])
+  @@index([date])
+  @@index([status])
+  @@index([vendor])
+  
+  // Ensure we don't process the same message twice
+  @@unique([accountId, messageId])
+}
