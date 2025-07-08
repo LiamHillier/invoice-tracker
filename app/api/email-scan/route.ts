@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from 'next/server';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth/options';
 import { prisma } from '@/lib/db/prisma';
@@ -27,7 +27,15 @@ interface ScanResponse {
     duration: number;
   };
   error?: string;
-  details?: Record<string, unknown>;
+  details?: unknown;
+  durationMs?: number;
+  summary?: Record<string, number>;
+  results?: Array<{
+    accountId: string;
+    email: string;
+    status: string;
+    [key: string]: unknown;
+  }>;
 }
 
 // Rate limiting configuration
@@ -39,8 +47,6 @@ const RATE_LIMIT = {
 // Track request counts per user
 const requestCounts = new Map<string, RateLimitState>();
 
-export const dynamic = 'force-dynamic';
-
 // Input validation schema
 const ScanRequestSchema = z.object({
   batchSize: z.number().min(1).max(100).default(50),
@@ -48,19 +54,24 @@ const ScanRequestSchema = z.object({
   forceRescan: z.boolean().default(false),
 }).strict();
 
-export async function POST(request: NextRequest): Promise<NextResponse<ScanResponse>> {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<ScanResponse>
+) {
   const startTime = Date.now();
   const session = await getServerSession(authOptions);
 
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', ['POST']);
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
   if (!session?.user?.id) {
-    return NextResponse.json(
-      { 
-        success: false, 
-        message: 'Authentication required',
-        error: 'Unauthorized' 
-      } as ScanResponse,
-      { status: 401 }
-    );
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required',
+      error: 'Unauthorized'
+    });
   }
 
   try {
@@ -81,22 +92,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<ScanRespo
 
     // Check rate limit
     if (userRequest.count >= RATE_LIMIT.MAX_REQUESTS) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: 'Rate limit exceeded',
-          error: 'Too many requests' 
-        } as ScanResponse,
-        { 
-          status: 429,
-          headers: {
-            'Retry-After': String(Math.ceil((RATE_LIMIT.WINDOW_MS - (now - userRequest.lastReset)) / 1000)),
-            'X-RateLimit-Limit': String(RATE_LIMIT.MAX_REQUESTS),
-            'X-RateLimit-Remaining': '0',
-            'X-RateLimit-Reset': String(userRequest.lastReset + RATE_LIMIT.WINDOW_MS)
-          }
-        }
-      );
+      res.setHeader('Retry-After', String(Math.ceil((RATE_LIMIT.WINDOW_MS - (now - userRequest.lastReset)) / 1000)));
+      res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT.MAX_REQUESTS));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      res.setHeader('X-RateLimit-Reset', String(userRequest.lastReset + RATE_LIMIT.WINDOW_MS));
+      
+      return res.status(429).json({
+        success: false,
+        message: 'Rate limit exceeded',
+        error: 'Too many requests'
+      });
     }
 
     // Increment request count
@@ -106,30 +111,24 @@ export async function POST(request: NextRequest): Promise<NextResponse<ScanRespo
     // Parse and validate request body
     let body: ScanRequest;
     try {
-      body = await request.json();
+      body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Invalid request body';
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: 'Invalid request',
-          error: errorMessage
-        } as ScanResponse,
-        { status: 400 }
-      );
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request',
+        error: errorMessage
+      });
     }
 
     const validation = ScanRequestSchema.safeParse(body);
     if (!validation.success) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: 'Invalid request data',
-          error: 'Validation failed',
-          details: validation.error.format()
-        } as ScanResponse,
-        { status: 400 }
-      );
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request data',
+        error: 'Validation failed',
+        details: validation.error.format()
+      });
     }
 
     const { batchSize, query, forceRescan } = validation.data;
@@ -150,14 +149,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<ScanRespo
     });
 
     if (accounts.length === 0) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: 'No active Gmail accounts found',
-          error: 'Please connect a Gmail account first.',
-        } as ScanResponse,
-        { status: 400 }
-      );
+      return res.status(400).json({
+        success: false,
+        message: 'No active Gmail accounts found',
+        error: 'Please connect a Gmail account first.'
+      });
     }
 
     console.log(
@@ -310,11 +306,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<ScanRespo
       }
     );
 
-    return NextResponse.json({
+    return res.status(200).json({
       success: true,
-      message: `Processed ${results.length} accounts in ${(
-        totalDuration / 1000
-      ).toFixed(2)}s`,
+      message: `Processed ${results.length} accounts in ${(totalDuration / 1000).toFixed(2)}s`,
       durationMs: totalDuration,
       summary,
       results,
@@ -331,14 +325,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<ScanRespo
       });
     }
 
-    return NextResponse.json(
-      { 
-        success: false, 
-        message: 'An error occurred during email scanning',
-        error: 'Internal Server Error',
-        ...(process.env.NODE_ENV === 'development' ? { details: error } : {})
-      } as ScanResponse,
-      { status: 500 }
-    );
+    const errorResponse: ScanResponse = {
+      success: false,
+      message: 'An error occurred during email scanning',
+      error: 'Internal Server Error'
+    };
+
+    if (process.env.NODE_ENV === 'development' && error) {
+      errorResponse.details = error;
+    }
+
+    return res.status(500).json(errorResponse);
   }
 }

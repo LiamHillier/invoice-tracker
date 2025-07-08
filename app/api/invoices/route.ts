@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from 'next/server';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth/options';
 import { prisma } from '@/lib/db/prisma';
@@ -38,33 +38,40 @@ interface InvoiceResponse {
   }>;
   message?: string;
   error?: string;
+  details?: unknown;
   total: number;
   limit: number;
   offset: number;
 }
 
-export const dynamic = 'force-dynamic';
-
-export async function GET(request: NextRequest): Promise<NextResponse<InvoiceResponse>> {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<InvoiceResponse>
+) {
   try {
     const session = await getServerSession(authOptions);
 
+    if (req.method !== 'GET') {
+      res.setHeader('Allow', ['GET']);
+      return res.status(405).end(`Method ${req.method} Not Allowed`);
+    }
+
     if (!session?.user?.id) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          message: 'Authentication required',
-          error: 'Unauthorized' 
-        } as InvoiceResponse,
-        { status: 401 }
-      );
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required',
+        error: 'Unauthorized',
+        data: [],
+        total: 0,
+        limit: 0,
+        offset: 0
+      });
     }
 
     // Get query parameters
-    const { searchParams } = new URL(request.url);
-    const limit = Math.min(Number(searchParams.get('limit') || '999'), 1000);
-    const offset = Number(searchParams.get('offset') || '0');
-    const status = searchParams.get('status');
+    const limit = Math.min(Number(req.query.limit) || 999, 1000);
+    const offset = Number(req.query.offset) || 0;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
 
     // Build the query
     const where = {
@@ -141,7 +148,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<InvoiceRes
       offset,
     };
 
-    return NextResponse.json(response);
+    return res.status(200).json(response);
   } catch (error: unknown) {
     console.error('Error fetching invoices:', error);
     
@@ -154,14 +161,20 @@ export async function GET(request: NextRequest): Promise<NextResponse<InvoiceRes
       });
     }
 
-    return NextResponse.json(
-      { 
-        success: false, 
-        message: 'Failed to fetch invoices',
-        error: 'Internal Server Error',
-        ...(process.env.NODE_ENV === 'development' ? { details: error } : {})
-      } as InvoiceResponse,
-      { status: 500 }
-    );
+    const errorResponse: InvoiceResponse = {
+      success: false,
+      message: 'Failed to fetch invoices',
+      error: 'Internal Server Error',
+      data: [],
+      total: 0,
+      limit: 0,
+      offset: 0
+    };
+
+    if (process.env.NODE_ENV === 'development' && error) {
+      errorResponse.details = error;
+    }
+
+    return res.status(500).json(errorResponse);
   }
 }
