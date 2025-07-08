@@ -333,7 +333,11 @@ export class OpenAIService {
           
           IMPORTANT: Pay special attention to the total amount and currency. 
           Look for amounts in the format '$25.00' or '$ 25.00' or 'USD 25.00'.
-          The amount is likely near phrases like 'TOTAL CHARGE:', 'Amount Due:', or 'Total:'`,
+          The amount is likely near phrases like 'TOTAL CHARGE:', 'Amount Due:', or 'Total:'
+          
+          Can check the email for any attachments and try to extract the invoice from them as well.
+          
+          Vendor name could be found in the sent from address if not found in body.`,
         },
       ],
       temperature: 0.1,
