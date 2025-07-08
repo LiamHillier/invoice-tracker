@@ -5,21 +5,16 @@ import { prisma } from '@/lib/db/prisma';
 
 export async function DELETE(
   request: Request,
-  context: { params: { accountId: string } }
+  { params }: { params: { accountId: string } }
 ): Promise<NextResponse> {
-  const { params } = context;
   try {
     const session = await getServerSession(authOptions);
-    
     if (!session?.user?.id) {
-      return NextResponse.json(
-        { message: 'Unauthorized' },
-        { status: 401 }
-      );
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
     // Verify the account belongs to the user
-    const account = await prisma.account.findUnique({
+    const account = await prisma.account.findFirst({
       where: {
         id: params.accountId,
         userId: session.user.id,
@@ -27,25 +22,17 @@ export async function DELETE(
     });
 
     if (!account) {
-      return NextResponse.json(
-        { message: 'Account not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ message: 'Account not found' }, { status: 404 });
     }
 
     // Delete the account
     await prisma.account.delete({
-      where: {
-        id: params.accountId,
-      },
+      where: { id: params.accountId },
     });
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error disconnecting account:', error);
-    return NextResponse.json(
-      { message: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
   }
 }
