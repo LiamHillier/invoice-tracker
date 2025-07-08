@@ -39,9 +39,8 @@ export async function POST(request: Request) {
     });
 
     // Return success response without sensitive data
-    const { password: _, ...userWithoutPassword } = user;
     return NextResponse.json(
-      { user: userWithoutPassword, message: 'User created successfully' },
+      { user: { ...user, password: undefined }, message: 'User created successfully' },
       { status: 201 }
     );
   } catch (error) {

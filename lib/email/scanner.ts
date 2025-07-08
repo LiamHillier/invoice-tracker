@@ -1,51 +1,21 @@
 import { GmailService } from "./gmail";
 import { OpenAIService, type BatchEmailItem } from "../openai/service";
 import { prisma } from "../db/prisma";
+import { GmailMessage, GmailHeader } from "./types";
+import { isValidGmailMessage } from "./types";
 
-// Define local types to avoid import issues
-export type Attachment = {
-  filename: string;
-  mimeType: string;
-  data: string;
-};
-
-// Define Gmail API message schema
-export type GmailHeader = {
-  name?: string | null;
-  value?: string | null;
-};
-
-export type GmailPayloadBody = {
-  data?: string | null;
-  size?: number | null;
-};
-
-export type GmailPayloadPart = {
-  mimeType?: string | null;
-  body?: GmailPayloadBody | null;
-  parts?: GmailPayloadPart[] | null;
-};
-
-export type GmailPayload = {
-  headers?: GmailHeader[];
-  parts?: GmailPayloadPart[] | null;
-  body?: GmailPayloadBody | null;
-};
-
-export type GmailMessage = {
-  id?: string | null;
-  threadId?: string | null;
-  payload?: GmailPayload | null;
-  internalDate?: string | null;
-  labelIds?: string[] | null;
-};
 
 export class EmailScanner {
   private gmailService: GmailService;
   private userId: string;
   private accountId: string;
-  private errors: Array<{ messageId: string; error: string; timestamp: Date }> =
-    [];
+  private errors: Array<{ messageId: string; error: string; timestamp: Date }> = [];
+
+  private findHeader(headers: GmailHeader[] | undefined, name: string): string {
+    if (!headers) return '';
+    const header = headers.find((h) => h.name === name);
+    return header ? header.value : '';
+  }
 
   constructor(userId: string, accountId: string) {
     this.userId = userId;
@@ -67,13 +37,6 @@ export class EmailScanner {
     errorDetails?: Array<{ messageId: string; error: string; timestamp: Date }>;
   }> {
     try {
-      // Get the last processed message to avoid rescanning
-      const lastProcessed = await prisma.invoice.findFirst({
-        where: { accountId: this.accountId },
-        orderBy: { date: "desc" },
-        select: { messageId: true, date: true },
-      });
-
       // Search for emails
       console.log(
         `Searching emails with query: "${query}", maxResults: ${maxResults}`
@@ -82,7 +45,7 @@ export class EmailScanner {
         messages = [],
         nextPageToken,
         resultSizeEstimate,
-      } = await this.gmailService.searchEmails(query, maxResults, pageToken);
+      } = await this.gmailService.searchEmails(maxResults, pageToken);
 
       console.log(
         `Found ${messages.length} emails (${resultSizeEstimate} total estimated)`
@@ -198,7 +161,7 @@ export class EmailScanner {
       for (let i = 0; i < messagesToProcess.length; i += BATCH_SIZE) {
         const batch = messagesToProcess
           .slice(i, i + BATCH_SIZE)
-          .filter((msg): msg is GmailMessage & { id: string } => !!msg.id);
+          .filter(isValidGmailMessage);
 
         try {
           const fetchPromises = batch.map(async (message) => {
@@ -245,19 +208,10 @@ export class EmailScanner {
               // Save error to database
               try {
                 // Get the full email content including headers for error case
-                const subject =
-                  message.payload?.headers?.find(
-                    (h: any) => h.name === "Subject"
-                  )?.value || "No Subject";
-                const from =
-                  message.payload?.headers?.find((h: any) => h.name === "From")
-                    ?.value || "Unknown Sender";
-                const to =
-                  message.payload?.headers?.find((h: any) => h.name === "To")
-                    ?.value || "N/A";
-                const dateHeader =
-                  message.payload?.headers?.find((h: any) => h.name === "Date")
-                    ?.value || new Date().toISOString();
+                const subject = this.findHeader(message.payload?.headers, "Subject") || "No Subject";
+                const from = this.findHeader(message.payload?.headers, "From") || "Unknown Sender";
+                const to = this.findHeader(message.payload?.headers, "To") || "N/A";
+                const dateHeader = this.findHeader(message.payload?.headers, "Date") || new Date().toISOString();
 
                 // Get the message body if available
                 let body = "No email body content";
@@ -310,7 +264,7 @@ export class EmailScanner {
 
           const batchResults = (await Promise.all(fetchPromises)).filter(
             Boolean
-          ) as Array<BatchEmailItem & { fullMessage: any }>;
+          ) as Array<BatchEmailItem & { fullMessage: GmailMessage }>;
 
           if (batchResults.length === 0) continue;
 
@@ -561,7 +515,8 @@ export class EmailScanner {
 
       console.log(`Starting to process all emails with query: "${query}"`);
       console.log(`Max results: ${maxResults}, Batch size: ${batchSize}`);
-      const startTime = Date.now();
+      // Performance tracking can be re-enabled if needed
+    // const startTime = Date.now();
 
       while (hasMore) {
         batchNumber++;

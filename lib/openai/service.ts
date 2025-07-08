@@ -42,8 +42,8 @@ class Cache<T> {
   }
 }
 
-// Initialize caches
-const responseCache = new Cache<any>();
+// Initialize caches with proper types
+const responseCache = new Cache<Partial<InvoiceData>>();
 const emailCache = new Cache<InvoiceData>();
 
 export type InvoiceData = {
@@ -66,6 +66,22 @@ type Attachment = {
   mimeType: string;
   data: string; // Base64 encoded content
 };
+
+// Type for the raw response from the AI service
+interface AIResponse {
+  vendor?: string | null;
+  invoiceNumber?: string | null;
+  receiptNumber?: string | null;
+  date?: string | null;
+  invoiceDate?: string | null;
+  dueDate?: string | null;
+  totalAmount?: number | string | null;
+  currency?: string | null;
+  isInvoice?: boolean;
+  confidence?: number;
+  categories?: string[] | null;
+  category?: string | null; // Some models might return a single category
+}
 
 const INVOICE_SYSTEM_PROMPT = `You are an AI assistant specialized in extracting structured invoice and receipt information.
 
@@ -109,9 +125,7 @@ export type BatchEmailItem = {
   attachments: Attachment[];
 };
 
-export type BatchAnalysisResult = {
-  [key: string]: InvoiceData;
-};
+export type BatchAnalysisResult = Record<string, InvoiceData>;
 
 export class OpenAIService {
   private static BATCH_SIZE = 10; // Increased batch size for better throughput
@@ -360,23 +374,23 @@ export class OpenAIService {
       // Try with AI first
       const aiResult = await this.callOpenAI(processedContent, model);
 
-      // Parse the AI response
+      // Parse the AI response with proper typing
+      const aiResponse = aiResult as AIResponse;
       const responseData: InvoiceData = {
-        vendor: aiResult.vendor || null,
-        invoiceNumber:
-          aiResult.invoiceNumber || (aiResult as any).receiptNumber || null,
-        date: (aiResult as any).invoiceDate || aiResult.date || null,
-        dueDate: aiResult.dueDate || null,
-        totalAmount: aiResult.totalAmount
-          ? parseFloat(aiResult.totalAmount.toString())
+        vendor: aiResponse.vendor || null,
+        invoiceNumber: aiResponse.invoiceNumber || aiResponse.receiptNumber || null,
+        date: aiResponse.invoiceDate || aiResponse.date || null,
+        dueDate: aiResponse.dueDate || null,
+        totalAmount: aiResponse.totalAmount
+          ? parseFloat(aiResponse.totalAmount.toString())
           : null,
-        currency: aiResult.currency || null,
-        isInvoice: aiResult.isInvoice || false,
-        confidence: aiResult.confidence || 0,
-        categories: Array.isArray(aiResult.categories)
-          ? aiResult.categories
-          : (aiResult as any).category
-          ? [(aiResult as any).category]
+        currency: aiResponse.currency || null,
+        isInvoice: aiResponse.isInvoice || false,
+        confidence: aiResponse.confidence || 0,
+        categories: Array.isArray(aiResponse.categories)
+          ? aiResponse.categories
+          : aiResponse.category
+          ? [aiResponse.category]
           : [],
         source: "email",
       };
@@ -525,7 +539,16 @@ export class OpenAIService {
     // Check batch cache
     const cachedBatch = responseCache.get(cacheKey);
     if (cachedBatch) {
-      return { ...cachedBatch, ...cachedResults };
+      // Convert the cached batch to BatchAnalysisResult format
+      const batchResult: BatchAnalysisResult = {};
+      for (const email of emails) {
+        batchResult[email.id] = {
+          ...this.getDefaultResponse(),
+          ...cachedBatch,
+          processed: true
+        };
+      }
+      return { ...batchResult, ...cachedResults };
     }
 
     try {

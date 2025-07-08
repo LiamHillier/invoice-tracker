@@ -1,11 +1,14 @@
 import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
 import { prisma } from "@/lib/db/prisma";
+import type {
+  GmailMessage,
+  GmailMessagePart,
+  GmailMessageListResponse,
+  GmailAttachment,
+} from "./types";
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.modify",
-];
+// SCOPES constant removed as it's not being used
 
 export class GmailService {
   private oauth2Client: OAuth2Client;
@@ -59,52 +62,35 @@ export class GmailService {
     return google.gmail({ version: "v1", auth });
   }
 
-  async searchEmails(query: string, maxResults = 500, pageToken?: string) {
+  async searchEmails(
+    maxResults = 500,
+    pageToken?: string
+  ): Promise<GmailMessageListResponse> {
     const gmail = await this.getGmailClient();
-
-    // 1. Build your keyword clause from an array (so it’s easier to see each term)
-    const keywords = [
-      "invoice",
-      "receipt",
-      "bill",
-      "payment",
-      '"purchase order"',
-      '"sales order"',
-      '"tax invoice"',
-      "statement",
-      '"order confirmation"',
-    ].join(" OR ");
-
-    // 2. Date spec (from July of previous year to catch all relevant invoices)
-    const currentYear = new Date().getFullYear();
-    const lastYear = currentYear - 1;
-    const dateSpec = `after:${lastYear}/07/01`;
-
-    const excludeUberEats = '-Uber -"Uber Eats"';
-
-    // 4. “Anywhere” spec
-    const anywhere = "in:anywhere";
-
     // 5. Combine them into _one_ flat string, with a single space between each piece
-    const fullQuery = `${anywhere} ${dateSpec} ${excludeUberEats}`;
-
-    // 5. (Optional) Strip any accidental newlines/multi-spaces
-    const cleanQuery = fullQuery.replace(/\s+/g, " ").trim();
-
+    const cleanQuery = `to:hillierliam37@gmail.com newer_than:1y (subject:(invoice OR receipt OR purchase OR order OR confirmation OR payment) OR body:(invoice OR receipt OR "order confirmation" OR "purchase confirmation" OR payment OR "tax invoice")) -{"uber eats" uber ubereats}
+`;
     const response = await gmail.users.messages.list({
       userId: "me",
+      q: cleanQuery,
       maxResults,
       pageToken,
     });
 
+    // Ensure we have a valid response with messages
+    const messages = (response.data.messages || []).filter(
+      (msg): msg is { id: string; threadId: string } =>
+        !!msg.id && !!msg.threadId
+    );
+
     return {
-      messages: response.data.messages || [],
-      nextPageToken: response.data.nextPageToken,
-      resultSizeEstimate: response.data.resultSizeEstimate,
+      messages,
+      nextPageToken: response.data.nextPageToken || undefined,
+      resultSizeEstimate: response.data.resultSizeEstimate || 0,
     };
   }
 
-  async getMessage(messageId: string) {
+  async getMessage(messageId: string): Promise<GmailMessage> {
     const gmail = await this.getGmailClient();
 
     const response = await gmail.users.messages.get({
@@ -113,7 +99,20 @@ export class GmailService {
       format: "full",
     });
 
-    return response.data;
+    if (!response.data.id || !response.data.threadId) {
+      throw new Error("Invalid message response from Gmail API");
+    }
+
+    return {
+      id: response.data.id,
+      threadId: response.data.threadId,
+      labelIds: response.data.labelIds || [],
+      snippet: response.data.snippet || "",
+      payload: response.data.payload as GmailMessagePart | undefined,
+      internalDate: response.data.internalDate,
+      sizeEstimate: response.data.sizeEstimate || 0,
+      historyId: response.data.historyId,
+    };
   }
 
   private htmlToText(html: string): string {
@@ -148,7 +147,9 @@ export class GmailService {
     return text;
   }
 
-  private getPartData(part: any): { type: string; data: string } | null {
+  private getPartData(
+    part: GmailMessagePart
+  ): { type: string; data: string } | null {
     if (part.body?.data) {
       return {
         type: part.mimeType || "text/plain",
@@ -158,38 +159,41 @@ export class GmailService {
     return null;
   }
 
-  async getMessageBody(message: any): Promise<string> {
+  private async processPart(
+    part: GmailMessagePart,
+    textParts: string[],
+    htmlParts: string[]
+  ): Promise<void> {
+    // Check if this part has data
+    const partData = this.getPartData(part);
+    if (partData) {
+      if (partData.type === "text/plain") {
+        textParts.push(partData.data);
+      } else if (partData.type === "text/html") {
+        htmlParts.push(partData.data);
+      }
+    }
+
+    // Process nested parts
+    if (part.parts) {
+      for (const subPart of part.parts) {
+        await this.processPart(subPart, textParts, htmlParts);
+      }
+    }
+  }
+
+  async getMessageBody(message: GmailMessage): Promise<string> {
     if (!message.payload) return "";
 
     const textParts: string[] = [];
     const htmlParts: string[] = [];
 
-    // Helper function to process parts recursively
-    const processPart = (part: any) => {
-      // Check if this part has data
-      const partData = this.getPartData(part);
-      if (partData) {
-        if (partData.type === "text/plain") {
-          textParts.push(partData.data);
-        } else if (partData.type === "text/html") {
-          htmlParts.push(partData.data);
-        }
-      }
-
-      // Process nested parts
-      if (part.parts) {
-        part.parts.forEach(processPart);
-      }
-    };
-
-    // Start processing from the root
-    processPart(message.payload);
+    // Process the message parts
+    await this.processPart(message.payload, textParts, htmlParts);
 
     // Try to get the subject for better context
     const headers = message.payload.headers || [];
-    const subject =
-      headers.find((h: any) => h.name?.toLowerCase() === "subject")?.value ||
-      "";
+    const subject = headers.find((h) => h.name?.toLowerCase() === "subject")?.value || "";
 
     // Combine all text parts
     const combinedText = textParts.join("\n\n").trim();
@@ -220,90 +224,111 @@ export class GmailService {
     return subject;
   }
 
-  async getAttachments(message: any) {
-    if (!message.payload?.parts) return [];
-
-    const attachments = [];
+  private async getAttachment(
+    messageId: string,
+    attachmentId: string
+  ): Promise<{ data: string | null; size: number } | null> {
     const gmail = await this.getGmailClient();
 
-    for (const part of message.payload.parts) {
-      try {
-        // Skip if not an attachment or no filename
-        if (!part.filename || !part.filename.trim() || !part.body?.attachmentId)
-          continue;
+    try {
+      const response = await gmail.users.messages.attachments.get({
+        userId: "me",
+        messageId,
+        id: attachmentId,
+      });
 
-        // Skip large attachments (>5MB) to avoid memory issues
-        const size = parseInt(part.body.size || "0");
-        if (size > 5 * 1024 * 1024) {
-          // 5MB limit
-          console.log(
-            `Skipping large attachment: ${part.filename} (${Math.round(
-              size / 1024 / 1024
-            )}MB)`
+      return {
+        data: response.data.data || null,
+        size: response.data.size || 0,
+      };
+    } catch (error) {
+      console.error(`Error getting attachment ${attachmentId}:`, error);
+      return null;
+    }
+  }
+
+  async getAttachments(message: GmailMessage): Promise<GmailAttachment[]> {
+    if (!message.payload?.parts) return [];
+
+    const attachments: GmailAttachment[] = [];
+    const parts: GmailMessagePart[] = [message.payload];
+
+    // Process all parts recursively
+    while (parts.length > 0) {
+      const part = parts.pop();
+      if (!part) continue;
+
+      // Add any nested parts to the queue
+      if (part.parts) {
+        parts.push(...part.parts);
+      }
+
+      // Check if this part is an attachment
+      if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+        try {
+          const attachment = await this.getAttachment(message.id, part.body.attachmentId);
+          if (!attachment?.data) {
+            console.log(`No data for attachment: ${part.filename}`);
+            continue;
+          }
+
+          const mimeType = (part.mimeType || "").toLowerCase();
+          const filename = part.filename.toLowerCase();
+
+          // Check if file is a PDF by MIME type or extension
+          const isPdf = mimeType === "application/pdf" || filename.endsWith(".pdf");
+
+          // Check if file has a supported extension
+          const hasSupportedExtension = [
+            ".pdf",
+            ".txt",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".jpg",
+            ".jpeg",
+            ".png",
+          ].some((ext) => filename.endsWith(ext));
+
+          // Check if MIME type is in our supported list
+          const supportedMimeTypes = [
+            "application/pdf",
+            "text/plain",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "image/jpeg",
+            "image/png",
+          ];
+          
+          const isSupportedMimeType = supportedMimeTypes.some(
+            (type) => mimeType.startsWith(type)
           );
+
+          // Accept the file if it's explicitly a PDF or has a supported MIME type/extension
+          const shouldAcceptFile = isPdf || isSupportedMimeType || hasSupportedExtension;
+
+          if (!shouldAcceptFile) {
+            console.log(
+              `Skipping unsupported file: ${part.filename} (${mimeType})`
+            );
+            continue;
+          }
+
+          // At this point, we know attachment.data is not null due to earlier check
+
+          attachments.push({
+            filename: part.filename,
+            mimeType: mimeType,
+            data: attachment.data,
+            size: attachment.size,
+          });
+        } catch (error) {
+          console.error(`Error processing attachment ${part.filename}:`, error);
           continue;
         }
-
-        // Get the attachment data
-        const response = await gmail.users.messages.attachments.get({
-          userId: "me",
-          messageId: message.id,
-          id: part.body.attachmentId,
-        });
-
-        // Only include relevant file types
-        const mimeType = part.mimeType?.toLowerCase() || "";
-        const filename = part.filename.toLowerCase();
-
-        // Check if file is a PDF by MIME type or extension
-        const isPdf =
-          mimeType === "application/pdf" || filename.endsWith(".pdf");
-
-        // Check if file has a supported extension
-        const hasSupportedExtension = [
-          ".pdf",
-          ".txt",
-          ".doc",
-          ".docx",
-          ".xls",
-          ".xlsx",
-          ".jpg",
-          ".jpeg",
-          ".png",
-        ].some((ext) => filename.endsWith(ext));
-
-        // Check if MIME type is in our supported list
-        const isSupportedMimeType = [
-          "application/pdf",
-          "text/plain",
-          "application/msword",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "application/vnd.ms-excel",
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          "image/jpeg",
-          "image/png",
-        ].some((type) => mimeType.startsWith(type));
-
-        // Accept the file if it's explicitly a PDF or has a supported MIME type/extension
-        const shouldAcceptFile =
-          isPdf || isSupportedMimeType || hasSupportedExtension;
-
-        if (!shouldAcceptFile) {
-          console.log(
-            `Skipping unsupported file: ${part.filename} (${mimeType})`
-          );
-          continue;
-        }
-
-        attachments.push({
-          filename: part.filename,
-          mimeType: mimeType,
-          size: size,
-          data: response.data.data, // Base64 encoded data
-        });
-      } catch (error) {
-        console.error(`Error processing attachment ${part.filename}:`, error);
-        continue;
       }
     }
 

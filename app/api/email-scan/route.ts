@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth/options";
 import { prisma } from "@/lib/db/prisma";
 import { EmailScanner } from "@/lib/email/scanner";
-import { string, z } from "zod";
+import { z } from "zod";
 
 // Rate limiting configuration
 const RATE_LIMIT = {
@@ -23,7 +23,7 @@ const ScanRequestSchema = z.object({
   forceRescan: z.boolean().default(false),
 });
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   const startTime = Date.now();
 
   try {
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
     let body;
     try {
       body = await request.json();
-    } catch (error) {
+    } catch {
       return NextResponse.json(
         { success: false, error: "Invalid JSON body" },
         { status: 400 }
@@ -288,15 +288,15 @@ export async function POST(request: Request) {
       summary,
       results,
     });
-  } catch (error) {
-    console.error("Error in email scan API:", error);
+  } catch (err) {
+    console.error("Error in email-scan route:", err);
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Internal server error",
+        error: err instanceof Error ? err.message : "Internal server error",
         stack:
-          process.env.NODE_ENV === "development" && error instanceof Error
-            ? error.stack
+          process.env.NODE_ENV === "development" && err instanceof Error
+            ? err.stack
             : undefined,
       },
       { status: 500 }

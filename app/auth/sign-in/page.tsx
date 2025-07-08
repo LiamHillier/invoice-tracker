@@ -16,8 +16,7 @@ export default function SignInPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const callbackUrl = searchParams?.get('callbackUrl') || '/dashboard';
-  const error = searchParams?.get('error');
+  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
   useEffect(() => {
     if (status === 'authenticated') {
@@ -25,15 +24,6 @@ export default function SignInPage() {
     }
   }, [status, router, callbackUrl]);
 
-  useEffect(() => {
-    if (error) {
-      toast.error('Failed to sign in. Please try again.');
-      // Remove error from URL
-      const newUrl = new URL(window.location.href);
-      newUrl.searchParams.delete('error');
-      window.history.replaceState({}, '', newUrl.toString());
-    }
-  }, [error]);
 
   if (status === 'loading') {
     return (
@@ -66,7 +56,7 @@ export default function SignInPage() {
       } else if (result?.url) {
         router.push(result.url);
       }
-    } catch (error) {
+    } catch {
       toast.error('An error occurred. Please try again.');
     } finally {
       setIsLoading(false);

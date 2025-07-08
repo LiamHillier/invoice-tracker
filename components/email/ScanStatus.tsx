@@ -14,7 +14,6 @@ interface ScanStatusProps {
 }
 
 export function ScanStatus({
-  accountId,
   isActive,
   lastSynced,
   syncStatus,

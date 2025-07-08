@@ -1,6 +1,5 @@
 import { PrismaAdapter } from "@auth/prisma-adapter";
-import { NextAuthOptions, User, Account, Profile, getServerSession } from "next-auth";
-import { JWT } from "next-auth/jwt";
+import { NextAuthOptions, User, getServerSession } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import { compare } from "bcryptjs";
@@ -83,7 +82,7 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async signIn({ user, account, profile }) {
+    async signIn({ user, account }) {
       // If this is a credentials sign-in, just return true
       if (account?.provider === 'credentials') {
         return true;

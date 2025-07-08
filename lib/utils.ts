@@ -24,7 +24,7 @@ export function formatCurrency(amount: number, currency: string = 'AUD'): string
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(amount);
-  } catch (error) {
+  } catch {
     // If formatting fails for any reason, fall back to a simple format
     return `${safeCurrency} ${amount.toFixed(2)}`;
   }
@@ -67,13 +67,13 @@ export function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export function debounce<T extends (...args: any[]) => any>(
+export function debounce<T extends (...args: unknown[]) => unknown>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
   let timeout: NodeJS.Timeout;
   
-  return function executedFunction(...args: Parameters<T>) {
+  return function executedFunction(...args: Parameters<T>): void {
     const later = () => {
       clearTimeout(timeout);
       func(...args);

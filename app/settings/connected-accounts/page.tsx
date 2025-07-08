@@ -16,7 +16,7 @@ interface ConnectedAccount {
 }
 
 export default function ConnectedAccountsPage() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
