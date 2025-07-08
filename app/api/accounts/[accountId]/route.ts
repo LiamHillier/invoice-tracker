@@ -3,16 +3,11 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/options';
 import { prisma } from '@/lib/db/prisma';
 
-type RouteParams = {
-  params: {
-    accountId: string;
-  };
-};
-
 export async function DELETE(
   _request: NextRequest,
-  { params }: RouteParams
+  context: { params: { accountId: string } }
 ): Promise<NextResponse> {
+  const { accountId } = context.params;
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -22,7 +17,7 @@ export async function DELETE(
     // Verify the account belongs to the user
     const account = await prisma.account.findFirst({
       where: {
-        id: params.accountId,
+        id: accountId,
         userId: session.user.id,
       },
     });
@@ -33,7 +28,7 @@ export async function DELETE(
 
     // Delete the account
     await prisma.account.delete({
-      where: { id: params.accountId },
+      where: { id: accountId },
     });
 
     return NextResponse.json({ success: true });
