@@ -1,4 +1,4 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
+import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth/options';
 import { prisma } from '@/lib/db/prisma';
@@ -44,43 +44,39 @@ interface InvoiceResponse {
   offset: number;
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<InvoiceResponse>
-) {
+export async function GET(request: Request) {
   try {
     const session = await getServerSession(authOptions);
 
-    if (req.method !== 'GET') {
-      res.setHeader('Allow', ['GET']);
-      return res.status(405).end(`Method ${req.method} Not Allowed`);
-    }
-
     if (!session?.user?.id) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required',
-        error: 'Unauthorized',
-        data: [],
-        total: 0,
-        limit: 0,
-        offset: 0
-      });
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Authentication required',
+          error: 'Unauthorized',
+          data: [],
+          total: 0,
+          limit: 0,
+          offset: 0
+        },
+        { status: 401 }
+      );
     }
 
-    // Get query parameters
-    const limit = Math.min(Number(req.query.limit) || 999, 1000);
-    const offset = Number(req.query.offset) || 0;
-    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-
-    // Build the query
-    const where = {
+    // Get query parameters from URL
+    const { searchParams } = new URL(request.url);
+    const limit = Math.min(Number(searchParams.get('limit')) || 10, 100);
+    const offset = Number(searchParams.get('offset')) || 0;
+    const status = searchParams.get('status') || undefined;
+    
+    // Remove unused variable
+    const whereClause = {
       userId: session.user.id,
       ...(status ? { status } : {}),
     };
 
-    // Define the invoice select fields to ensure type safety
-    const invoiceSelect = {
+    // Fetch invoices with pagination using proper typing
+    const selectFields = {
       id: true,
       userId: true,
       accountId: true,
@@ -112,53 +108,77 @@ export default async function handler(
         },
       },
     };
-
-    // Get paginated invoices with proper typing
     const [invoices, total] = await Promise.all([
       prisma.invoice.findMany({
-        where,
-        select: invoiceSelect,
-        orderBy: { date: 'desc' },
+        where: whereClause,
+        select: selectFields,
+        orderBy: {
+          date: 'desc',
+        },
         take: limit,
         skip: offset,
       }),
-      prisma.invoice.count({ where }),
+      prisma.invoice.count({
+        where: whereClause,
+      }),
     ]);
 
-    // Create response with proper typing
+    // Map the invoices to the expected response format
     const response: InvoiceResponse = {
       success: true,
-      data: invoices.map(invoice => ({
-        ...invoice,
-        // Ensure all required fields are present with proper types
-        externalId: invoice.externalId ?? null,
-        invoiceNumber: invoice.invoiceNumber ?? null,
-        vendorName: invoice.vendorName ?? null,
-        vendorEmail: invoice.vendorEmail ?? null,
-        description: invoice.description ?? null,
-        category: invoice.category ?? null,
-        tags: invoice.tags ?? [],
-        processedAt: invoice.processedAt ?? null,
-        error: invoice.error ?? null,
-        source: invoice.source ?? null,
-        metadata: invoice.metadata as Record<string, unknown> | null,
+      data: invoices.map((invoice) => ({
+        id: invoice.id,
+        userId: invoice.userId,
+        accountId: invoice.accountId,
+        messageId: invoice.messageId,
+        externalId: invoice.externalId,
+        invoiceNumber: invoice.invoiceNumber,
+        date: invoice.date,
+        dueDate: invoice.dueDate,
+        amount: invoice.amount,
+        currency: invoice.currency,
+        status: invoice.status,
+        vendorName: invoice.vendorName,
+        vendorEmail: invoice.vendorEmail,
+        description: invoice.description,
+        category: invoice.category,
+        tags: invoice.tags || [],
+        isProcessed: invoice.isProcessed,
+        processedAt: invoice.processedAt,
+        error: invoice.error,
+        source: invoice.source,
+        metadata: invoice.metadata ? JSON.parse(JSON.stringify(invoice.metadata)) : null,
+        rawData: invoice.rawData,
+        createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
+        account: {
+          email: invoice.account.email,
+          provider: invoice.account.provider,
+        },
       })),
       total,
       limit,
       offset,
     };
 
-    return res.status(200).json(response);
-  } catch (error: unknown) {
+    return NextResponse.json(response);
+  } catch (error) {
     console.error('Error fetching invoices:', error);
     
-    // Log detailed error for server-side debugging
-    if (error instanceof Error) {
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name,
-      });
+    // Handle known error types
+    if (error instanceof Error && error.name === 'PrismaClientKnownRequestError') {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Database error',
+          error: error.message,
+          data: [],
+          total: 0,
+          limit: 0,
+          offset: 0
+        },
+        { status: 400 }
+      );
     }
 
     const errorResponse: InvoiceResponse = {
@@ -175,6 +195,6 @@ export default async function handler(
       errorResponse.details = error;
     }
 
-    return res.status(500).json(errorResponse);
+    return NextResponse.json(errorResponse, { status: 500 });
   }
 }
