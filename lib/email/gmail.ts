@@ -1,10 +1,10 @@
-import { google } from 'googleapis';
-import { OAuth2Client } from 'google-auth-library';
-import { prisma } from '@/lib/db/prisma';
+import { google } from "googleapis";
+import { OAuth2Client } from "google-auth-library";
+import { prisma } from "@/lib/db/prisma";
 
 const SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.modify',
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.modify",
 ];
 
 export class GmailService {
@@ -21,11 +21,11 @@ export class GmailService {
 
   private async getAuthClient() {
     const account = await prisma.account.findFirst({
-      where: { userId: this.userId, provider: 'google' },
+      where: { userId: this.userId, provider: "google" },
     });
 
     if (!account?.access_token) {
-      throw new Error('No access token found');
+      throw new Error("No access token found");
     }
 
     this.oauth2Client.setCredentials({
@@ -44,7 +44,9 @@ export class GmailService {
         data: {
           access_token: credentials.access_token,
           refresh_token: credentials.refresh_token || account.refresh_token,
-          expires_at: credentials.expiry_date ? Math.floor(credentials.expiry_date / 1000) : null,
+          expires_at: credentials.expiry_date
+            ? Math.floor(credentials.expiry_date / 1000)
+            : null,
         },
       });
     }
@@ -54,40 +56,43 @@ export class GmailService {
 
   async getGmailClient() {
     const auth = await this.getAuthClient();
-    return google.gmail({ version: 'v1', auth });
+    return google.gmail({ version: "v1", auth });
   }
 
-  async searchEmails(query: string, maxResults = 50, pageToken?: string) {
+  async searchEmails(query: string, maxResults = 500, pageToken?: string) {
     const gmail = await this.getGmailClient();
 
     // 1. Build your keyword clause from an array (so it’s easier to see each term)
     const keywords = [
-      'invoice',
-      'receipt',
-      'bill',
-      'payment',
+      "invoice",
+      "receipt",
+      "bill",
+      "payment",
       '"purchase order"',
       '"sales order"',
       '"tax invoice"',
-      'statement',
+      "statement",
       '"order confirmation"',
-    ].join(' OR ');
+    ].join(" OR ");
 
-    // 2. Date spec (one year ago from today, i.e. July 8 2024)
-    const dateSpec = 'after:2024/07/08';
+    // 2. Date spec (from July of previous year to catch all relevant invoices)
+    const currentYear = new Date().getFullYear();
+    const lastYear = currentYear - 1;
+    const dateSpec = `after:${lastYear}/07/01`;
 
-    // 3. “Anywhere” spec
-    const anywhere = 'in:anywhere';
+    const excludeUberEats = '-Uber -"Uber Eats"';
 
-    // 4. Combine them into _one_ flat string, with a single space between each piece
-    const fullQuery = `${anywhere} ${dateSpec} (${keywords})`;
+    // 4. “Anywhere” spec
+    const anywhere = "in:anywhere";
+
+    // 5. Combine them into _one_ flat string, with a single space between each piece
+    const fullQuery = `${anywhere} ${dateSpec} ${excludeUberEats}`;
 
     // 5. (Optional) Strip any accidental newlines/multi-spaces
-    const cleanQuery = fullQuery.replace(/\s+/g, ' ').trim();
+    const cleanQuery = fullQuery.replace(/\s+/g, " ").trim();
 
     const response = await gmail.users.messages.list({
-      userId: 'me',
-      q: cleanQuery,
+      userId: "me",
       maxResults,
       pageToken,
     });
@@ -103,50 +108,71 @@ export class GmailService {
     const gmail = await this.getGmailClient();
 
     const response = await gmail.users.messages.get({
-      userId: 'me',
+      userId: "me",
       id: messageId,
-      format: 'full',
+      format: "full",
     });
 
     return response.data;
   }
 
   private htmlToText(html: string): string {
-    // Simple HTML to text conversion
-    return html
-      .replace(/<[^>]+>/g, ' ') // Remove HTML tags
-      .replace(/\s+/g, ' ')     // Collapse multiple spaces
-      .replace(/&nbsp;/g, ' ')   // Replace non-breaking spaces
-      .replace(/&[a-z]+;/g, '')  // Remove other HTML entities
+    if (!html) return "";
+
+    // First, try to extract text content from common email structures
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    const content = bodyMatch ? bodyMatch[1] : html;
+
+    // Remove script and style tags
+    let text = content
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
+
+    // Replace common HTML elements with newlines for better readability
+    text = text
+      .replace(/<\/?(div|p|br|hr|h\d|article|section)[^>]*>/gi, "\n")
+      .replace(/<\/?(li|dt|dd)[^>]*>/gi, "\n• ")
+      .replace(/<\/td>/gi, " ")
+      .replace(/<\/tr>/gi, "\n");
+
+    // Remove remaining HTML tags
+    text = text.replace(/<[^>]+>/g, " ");
+
+    // Handle HTML entities and whitespace
+    text = text
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&[a-z0-9]+;/gi, "")
+      .replace(/\s+/g, " ")
       .trim();
+
+    return text;
   }
 
   private getPartData(part: any): { type: string; data: string } | null {
     if (part.body?.data) {
       return {
-        type: part.mimeType || 'text/plain',
-        data: Buffer.from(part.body.data, 'base64').toString('utf-8')
+        type: part.mimeType || "text/plain",
+        data: Buffer.from(part.body.data, "base64").toString("utf-8"),
       };
     }
     return null;
   }
 
   async getMessageBody(message: any): Promise<string> {
-    if (!message.payload) return '';
+    if (!message.payload) return "";
 
-    let plainText = '';
-    let htmlContent = '';
+    const textParts: string[] = [];
+    const htmlParts: string[] = [];
 
     // Helper function to process parts recursively
     const processPart = (part: any) => {
       // Check if this part has data
       const partData = this.getPartData(part);
       if (partData) {
-        if (partData.type === 'text/plain') {
-          plainText = partData.data;
-        } else if (partData.type === 'text/html' && !plainText) {
-          // Only use HTML if we haven't found plain text yet
-          htmlContent = partData.data;
+        if (partData.type === "text/plain") {
+          textParts.push(partData.data);
+        } else if (partData.type === "text/html") {
+          htmlParts.push(partData.data);
         }
       }
 
@@ -159,19 +185,39 @@ export class GmailService {
     // Start processing from the root
     processPart(message.payload);
 
-    // Return plain text if found, otherwise convert HTML to text, otherwise empty string
-    if (plainText) {
-      return plainText;
-    } else if (htmlContent) {
-      return this.htmlToText(htmlContent);
+    // Try to get the subject for better context
+    const headers = message.payload.headers || [];
+    const subject =
+      headers.find((h: any) => h.name?.toLowerCase() === "subject")?.value ||
+      "";
+
+    // Combine all text parts
+    const combinedText = textParts.join("\n\n").trim();
+    const combinedHtml = htmlParts.join("\n\n").trim();
+
+    // If we have plain text, use that first
+    if (combinedText) {
+      return combinedText;
+    }
+
+    // Otherwise, try to extract text from HTML
+    if (combinedHtml) {
+      return this.htmlToText(combinedHtml);
     }
 
     // Fallback to the body data if no parts
     if (message.payload.body?.data) {
-      return Buffer.from(message.payload.body.data, 'base64').toString('utf-8');
+      try {
+        return Buffer.from(message.payload.body.data, "base64").toString(
+          "utf-8"
+        );
+      } catch (error) {
+        console.error("Error decoding message body:", error);
+      }
     }
 
-    return '';
+    // If we still don't have content, return the subject as a last resort
+    return subject;
   }
 
   async getAttachments(message: any) {
@@ -183,51 +229,69 @@ export class GmailService {
     for (const part of message.payload.parts) {
       try {
         // Skip if not an attachment or no filename
-        if (!part.filename || !part.filename.trim() || !part.body?.attachmentId) continue;
+        if (!part.filename || !part.filename.trim() || !part.body?.attachmentId)
+          continue;
 
         // Skip large attachments (>5MB) to avoid memory issues
-        const size = parseInt(part.body.size || '0');
-        if (size > 5 * 1024 * 1024) { // 5MB limit
-          console.log(`Skipping large attachment: ${part.filename} (${Math.round(size / 1024 / 1024)}MB)`);
+        const size = parseInt(part.body.size || "0");
+        if (size > 5 * 1024 * 1024) {
+          // 5MB limit
+          console.log(
+            `Skipping large attachment: ${part.filename} (${Math.round(
+              size / 1024 / 1024
+            )}MB)`
+          );
           continue;
         }
 
         // Get the attachment data
         const response = await gmail.users.messages.attachments.get({
-          userId: 'me',
+          userId: "me",
           messageId: message.id,
           id: part.body.attachmentId,
         });
 
         // Only include relevant file types
-        const mimeType = part.mimeType?.toLowerCase() || '';
+        const mimeType = part.mimeType?.toLowerCase() || "";
         const filename = part.filename.toLowerCase();
 
         // Check if file is a PDF by MIME type or extension
-        const isPdf = mimeType === 'application/pdf' || filename.endsWith('.pdf');
+        const isPdf =
+          mimeType === "application/pdf" || filename.endsWith(".pdf");
 
         // Check if file has a supported extension
         const hasSupportedExtension = [
-          '.pdf', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png'
-        ].some(ext => filename.endsWith(ext));
+          ".pdf",
+          ".txt",
+          ".doc",
+          ".docx",
+          ".xls",
+          ".xlsx",
+          ".jpg",
+          ".jpeg",
+          ".png",
+        ].some((ext) => filename.endsWith(ext));
 
         // Check if MIME type is in our supported list
         const isSupportedMimeType = [
-          'application/pdf',
-          'text/plain',
-          'application/msword',
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'application/vnd.ms-excel',
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'image/jpeg',
-          'image/png',
-        ].some(type => mimeType.startsWith(type));
+          "application/pdf",
+          "text/plain",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "application/vnd.ms-excel",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "image/jpeg",
+          "image/png",
+        ].some((type) => mimeType.startsWith(type));
 
         // Accept the file if it's explicitly a PDF or has a supported MIME type/extension
-        const shouldAcceptFile = isPdf || isSupportedMimeType || hasSupportedExtension;
+        const shouldAcceptFile =
+          isPdf || isSupportedMimeType || hasSupportedExtension;
 
         if (!shouldAcceptFile) {
-          console.log(`Skipping unsupported file: ${part.filename} (${mimeType})`);
+          console.log(
+            `Skipping unsupported file: ${part.filename} (${mimeType})`
+          );
           continue;
         }
 
@@ -248,23 +312,25 @@ export class GmailService {
 
   async markAsProcessed(messageId: string) {
     const gmail = await this.getGmailClient();
-    const labelName = 'INVOICE_PROCESSED';
+    const labelName = "INVOICE_PROCESSED";
 
     try {
       // First, try to create the label if it doesn't exist
       let labelId: string | undefined;
 
       try {
-        const labelsRes = await gmail.users.labels.list({ userId: 'me' });
-        const existingLabel = labelsRes.data.labels?.find(label => label.name === labelName);
+        const labelsRes = await gmail.users.labels.list({ userId: "me" });
+        const existingLabel = labelsRes.data.labels?.find(
+          (label) => label.name === labelName
+        );
 
         if (!existingLabel) {
           const createRes = await gmail.users.labels.create({
-            userId: 'me',
+            userId: "me",
             requestBody: {
               name: labelName,
-              labelListVisibility: 'labelShow',
-              messageListVisibility: 'show',
+              labelListVisibility: "labelShow",
+              messageListVisibility: "show",
             },
           });
           labelId = createRes.data.id!;
@@ -272,20 +338,19 @@ export class GmailService {
           labelId = existingLabel.id!;
         }
       } catch (error) {
-        console.warn('Failed to create label, proceeding without it:', error);
+        console.warn("Failed to create label, proceeding without it:", error);
       }
 
       // Now modify the message with the label
       await gmail.users.messages.modify({
-        userId: 'me',
+        userId: "me",
         id: messageId,
         requestBody: {
           addLabelIds: labelId ? [labelId] : [],
-          removeLabelIds: ['UNREAD', 'INBOX'],
         },
       });
     } catch (error) {
-      console.error('Error in markAsProcessed:', error);
+      console.error("Error in markAsProcessed:", error);
       throw error;
     }
   }

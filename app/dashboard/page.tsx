@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Icons } from '@/components/ui/icons';
 import { toast } from 'sonner';
 import { prisma } from '@/lib/db/prisma';
+import { formatCurrency } from '@/lib/utils';
 
 interface Invoice {
   id: string;
@@ -175,10 +176,7 @@ export default function DashboardPage() {
                       {new Date(invoice.date).toLocaleDateString()}
                     </td>
                     <td className="p-4 text-right align-middle font-medium">
-                      {new Intl.NumberFormat('en-AU', {
-                        style: 'currency',
-                        currency: invoice.currency || 'AUD',
-                      }).format(invoice.amount)}
+                      {formatCurrency(invoice.amount, invoice.currency)}
                     </td>
                     <td className="p-4 text-right align-middle">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${

@@ -119,6 +119,7 @@ model Invoice {
   dueDate     DateTime? // Extracted due date
   confidence  Float?    @default(1.0) // Confidence score of the analysis (0.0 to 1.0)
   source      String?   @default("email") // Source of the invoice data: 'email' or 'attachment'
+  rawContent  String?   @db.Text // Raw email content for reference and reprocessing
   
   // Relationships
   account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
