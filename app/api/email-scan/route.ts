@@ -1,9 +1,34 @@
-import { NextResponse, type NextRequest } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth/options";
-import { prisma } from "@/lib/db/prisma";
-import { EmailScanner } from "@/lib/email/scanner";
-import { z } from "zod";
+import { NextResponse, type NextRequest } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/options';
+import { prisma } from '@/lib/db/prisma';
+import { EmailScanner } from '@/lib/email/scanner';
+import { z } from 'zod';
+
+// Type definitions
+interface RateLimitState {
+  count: number;
+  lastReset: number;
+}
+
+interface ScanRequest {
+  batchSize?: number;
+  query?: string;
+  forceRescan?: boolean;
+}
+
+interface ScanResponse {
+  success: boolean;
+  message: string;
+  data?: {
+    processed: number;
+    failed: number;
+    total: number;
+    duration: number;
+  };
+  error?: string;
+  details?: Record<string, unknown>;
+}
 
 // Rate limiting configuration
 const RATE_LIMIT = {
@@ -12,33 +37,38 @@ const RATE_LIMIT = {
 };
 
 // Track request counts per user
-const requestCounts = new Map<string, { count: number; lastReset: number }>();
+const requestCounts = new Map<string, RateLimitState>();
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 
 // Input validation schema
 const ScanRequestSchema = z.object({
   batchSize: z.number().min(1).max(100).default(50),
-  query: z.string().default(""),
+  query: z.string().default(''),
   forceRescan: z.boolean().default(false),
-});
+}).strict();
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<NextResponse<ScanResponse>> {
   const startTime = Date.now();
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user?.id) {
+    return NextResponse.json(
+      { 
+        success: false, 
+        message: 'Authentication required',
+        error: 'Unauthorized' 
+      } as ScanResponse,
+      { status: 401 }
+    );
+  }
 
   try {
-    const session = await getServerSession(authOptions);
-
-    if (!session?.user?.id) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
 
     // Rate limiting check
     const now = Date.now();
-    const userRequest = requestCounts.get(session.user.id) || {
+    const userId = session.user.id;
+    const userRequest = requestCounts.get(userId) || {
       count: 0,
       lastReset: now,
     };
@@ -52,39 +82,39 @@ export async function POST(request: NextRequest) {
     // Check rate limit
     if (userRequest.count >= RATE_LIMIT.MAX_REQUESTS) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Too many requests. Please try again later.",
-        },
-        {
+        { 
+          success: false, 
+          message: 'Rate limit exceeded',
+          error: 'Too many requests' 
+        } as ScanResponse,
+        { 
           status: 429,
           headers: {
-            "Retry-After": String(
-              Math.ceil(
-                (userRequest.lastReset + RATE_LIMIT.WINDOW_MS - now) / 1000
-              )
-            ),
-            "X-RateLimit-Limit": String(RATE_LIMIT.MAX_REQUESTS),
-            "X-RateLimit-Remaining": "0",
-            "X-RateLimit-Reset": String(
-              Math.ceil((userRequest.lastReset + RATE_LIMIT.WINDOW_MS) / 1000)
-            ),
-          },
+            'Retry-After': String(Math.ceil((RATE_LIMIT.WINDOW_MS - (now - userRequest.lastReset)) / 1000)),
+            'X-RateLimit-Limit': String(RATE_LIMIT.MAX_REQUESTS),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(userRequest.lastReset + RATE_LIMIT.WINDOW_MS)
+          }
         }
       );
     }
 
     // Increment request count
     userRequest.count++;
-    requestCounts.set(session.user.id, userRequest);
+    requestCounts.set(userId, userRequest);
 
     // Parse and validate request body
-    let body;
+    let body: ScanRequest;
     try {
       body = await request.json();
-    } catch {
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Invalid request body';
       return NextResponse.json(
-        { success: false, error: "Invalid JSON body" },
+        { 
+          success: false, 
+          message: 'Invalid request',
+          error: errorMessage
+        } as ScanResponse,
         { status: 400 }
       );
     }
@@ -92,11 +122,12 @@ export async function POST(request: NextRequest) {
     const validation = ScanRequestSchema.safeParse(body);
     if (!validation.success) {
       return NextResponse.json(
-        {
-          success: false,
-          error: "Invalid request parameters",
-          details: validation.error.issues,
-        },
+        { 
+          success: false, 
+          message: 'Invalid request data',
+          error: 'Validation failed',
+          details: validation.error.format()
+        } as ScanResponse,
         { status: 400 }
       );
     }
@@ -122,9 +153,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            "No active Gmail accounts found. Please connect a Gmail account first.",
-        },
+          message: 'No active Gmail accounts found',
+          error: 'Please connect a Gmail account first.',
+        } as ScanResponse,
         { status: 400 }
       );
     }
@@ -288,17 +319,25 @@ export async function POST(request: NextRequest) {
       summary,
       results,
     });
-  } catch (err) {
-    console.error("Error in email-scan route:", err);
+  } catch (error) {
+    console.error('Error in email scan:', error);
+    
+    // Log detailed error for server-side debugging
+    if (error instanceof Error) {
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+    }
+
     return NextResponse.json(
-      {
-        success: false,
-        error: err instanceof Error ? err.message : "Internal server error",
-        stack:
-          process.env.NODE_ENV === "development" && err instanceof Error
-            ? err.stack
-            : undefined,
-      },
+      { 
+        success: false, 
+        message: 'An error occurred during email scanning',
+        error: 'Internal Server Error',
+        ...(process.env.NODE_ENV === 'development' ? { details: error } : {})
+      } as ScanResponse,
       { status: 500 }
     );
   }

@@ -1,11 +1,17 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/options';
 import { prisma } from '@/lib/db/prisma';
 
+type RouteParams = {
+  params: {
+    accountId: string;
+  };
+};
+
 export async function DELETE(
-  request: Request,
-  { params }: { params: { accountId: string } }
+  _request: NextRequest,
+  { params }: RouteParams
 ): Promise<NextResponse> {
   try {
     const session = await getServerSession(authOptions);

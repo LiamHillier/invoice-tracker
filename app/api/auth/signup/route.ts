@@ -2,21 +2,30 @@ import { NextResponse } from 'next/server';
 import { hash } from 'bcryptjs';
 import { prisma } from '@/lib/db/prisma';
 
+interface SignupRequest {
+  name: string;
+  email: string;
+  password: string;
+}
+
 export async function POST(request: Request) {
   try {
-    const { name, email, password } = await request.json();
+    const { name, email, password } = (await request.json()) as SignupRequest;
 
     // Validate input
-    if (!name || !email || !password) {
+    if (!name?.trim() || !email?.trim() || !password) {
       return NextResponse.json(
         { message: 'Name, email, and password are required' },
         { status: 400 }
       );
     }
 
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
+
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
+      where: { email: normalizedEmail },
     });
 
     if (existingUser) {
@@ -32,21 +41,36 @@ export async function POST(request: Request) {
     // Create user
     const user = await prisma.user.create({
       data: {
-        name,
-        email: email.toLowerCase(),
+        name: name.trim(),
+        email: normalizedEmail,
         password: hashedPassword,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
 
-    // Return success response without sensitive data
     return NextResponse.json(
-      { user: { ...user, password: undefined }, message: 'User created successfully' },
+      { 
+        success: true,
+        data: user,
+        message: 'User created successfully' 
+      },
       { status: 201 }
     );
   } catch (error) {
     console.error('Signup error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
     return NextResponse.json(
-      { message: 'Internal server error' },
+      { 
+        success: false,
+        message: 'An error occurred during signup',
+        error: process.env.NODE_ENV === 'development' ? errorMessage : undefined 
+      },
       { status: 500 }
     );
   }
